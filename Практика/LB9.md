@@ -1,235 +1,184 @@
-# Лабораторная работа №9  
-**Тема:** Настройка контроллера домена Samba DC  
-**Цель:** Освоить установку и конфигурацию Samba в режиме контроллера домена (Active Directory Domain Controller, AD DC) для управления учётными записями в сети.
+## Лабораторная работа № 9  
+**Тема:** Настройка контроллера домена Samba DC на сервере Ubuntu 24.04  
 
-## 1. Исходные данные
+### Цель работы  
+Настроить контроллер домена на базе Samba 4 в среде Ubuntu 24.04 с учётом существующей сетевой инфраструктуры (два интерфейса, DHCP, DNS). Обеспечить функционирование базовых служб Active Directory для управления пользователями и группами.
 
-- **Сервер:** Ubuntu Server  
-- **Сетевой интерфейс:** `ens34` (LAN‑сегмент)  
-- **IP‑адрес сервера:** `10.10.13.1`  
-- **Имя хоста:** `dc1.prac-sa.stud`  
-- **Домен:** `prac-sa.stud`  
-- **Пароль администратора домена:** `AdminPass2025#`  
-- **Рабочая группа:** `PRACSA`
+### Исходные данные
+- **ОС:** Ubuntu 24.04 (виртуальная машина VMware).  
+- **Имя хоста:** `cus`.  
+- **Полное доменное имя (FQDN):** `cus.testdomen.local`.  
+- **Сетевые интерфейсы:**  
+  - NAT (динамический IP);  
+  - LAN: `10.10.13.1/24`.  
+- **Службы:**  
+  - `isc-dhcp-server` (диапазон: `10.10.13.10–100`);  
+  - `bind9` с зонами:  
+    - прямая: `testdomen.local`;  
+    - обратная: `13.10.10.in-addr.arpa`.
 
-## 2. Подготовка сервера
+### Ход работы
 
-### 2.1. Обновление системы
+#### 1. Предварительная настройка сети и имени хоста
+1.1. Установите FQDN:  
 ```bash
-sudo apt update
-sudo apt upgrade -y
+sudo hostnamectl set-hostname cus.testdomen.local
 ```
-
-### 2.2. Настройка имени хоста
-```bash
-sudo hostnamectl set-hostname dc1.prac-sa.stud
-```
-
-Проверьте:
+1.2. Проверьте разрешение имени:  
 ```bash
 hostname -f
 ```
-Ожидаемый вывод: `dc1.prac-sa.stud`.
+Ожидаемый вывод: `cus.testdomen.local`.
 
-### 2.3. Редактирование `/etc/hosts`
-Откройте файл:
+#### 2. Подготовка DNS (bind9)
+2.1. Убедитесь, что в зоне `testdomen.local` есть запись для контроллера домена:  
+```zone
+cus.testdomen.local. IN A 10.10.13.1
+```
+2.2. В обратной зоне `13.10.10.in-addr.arpa` добавьте PTR‑запись:  
+```zone
+1 IN PTR cus.testdomen.local.
+```
+2.3. Перезапустите bind9:  
 ```bash
-sudo nano /etc/hosts
+sudo systemctl restart bind9
 ```
-Добавьте строку:
-```
-10.10.13.1    dc1.prac-sa.stud dc1
-```
-
-### 2.4. Отключение systemd‑resolved (если используется)
+2.4. Проверьте разрешение имён:  
 ```bash
-sudo systemctl disable --now systemd-resolved
-sudo rm /etc/resolv.conf
+nslookup cus.testdomen.local
+nslookup 10.10.13.1
 ```
-Создайте новый `/etc/resolv.conf`:
+
+#### 3. Установка пакетов Samba
+3.1. Обновите пакеты:  
 ```bash
-echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
+sudo apt update
 ```
-
-## 3. Установка Samba DC
-
-### 3.1. Установка пакетов
+3.2. Установите Samba и зависимости:  
 ```bash
-sudo apt install samba samba-dsdb-modules samba-vfs-modules smbclient krb5-user -y
+sudo apt install samba winbind libpam-winbind libnss-winbind \
+  libpam-krb5 krb5-config krb5-user krb5-kdc
 ```
 
-> **Примечание:** При установке `krb5-user` пропустите настройку Kerberos (выберите «Continue without configuration»).
-
-### 3.2. Удаление стандартной конфигурации Samba
+#### 4. Очистка предыдущих настроек (если есть)
 ```bash
-sudo rm /etc/samba/smb.conf
+sudo systemctl stop winbind smbd nmbd krb5-kdc
+sudo systemctl disable winbind smbd nmbd krb5-kdc
+sudo rm -f /etc/samba/smb.conf /etc/krb5.conf
 ```
 
-## 4. Развёртывание домена
-
-### 4.1. Запуск `samba-tool`
+#### 5. Создание домена Samba AD DC
+5.1. Запустите интерактивную настройку:  
 ```bash
 sudo samba-tool domain provision \
+  --realm=TESTDOMEN.LOCAL \
+  --domain=testdomen \
+  --server-role=dc \
+  --dns-backend=BIND9_DLZ \
   --use-rfc2307 \
-  --interactive
+  --adminpass='StrongP@ssw0rd!'
 ```
+**Пояснения параметров:**  
+- `--realm`: область Kerberos (заглавными).  
+- `--domain`: имя домена (без суффикса).  
+- `--dns-backend`: использование bind9 вместо встроенного DNS.  
+- `--adminpass`: пароль администратора домена.
 
-Последовательно введите:
-- **Realm:** `PRAC-SA.STUD`  
-- **Domain:** `prac-sa.stud`  
-- **Server role:** `dc`  
-- **DNS backend:** `SAMBA_INTERNAL`  
-- **Administrator password:** `AdminPass2025#`  
+5.2. После завершения проверьте создание файлов:  
+- `/etc/samba/smb.conf`;  
+- `/var/lib/samba/private/krb5.conf`.
 
-### 4.2. Проверка конфигурации
-После завершения появится путь к файлу `smb.conf`. Убедитесь, что он создан:
-```bash
-ls /etc/samba/smb.conf
-```
-
-## 5. Настройка Kerberos
-
-### 5.1. Создание `/etc/krb5.conf`
+#### 6. Настройка Kerberos
+6.1. Скопируйте конфигурационный файл:  
 ```bash
 sudo cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
 ```
+6.2. Убедитесь, что в `/etc/krb5.conf` указаны:  
+- `default_realm = TESTDOMEN.LOCAL`;  
+- секции `[realms]` и `[domain_realm]` для `testdomen.local`.
 
-### 5.2. Тестирование аутентификации Kerberos
-```bash
-kinit administrator@PRAC-SA.STUD
+#### 7. Интеграция Samba с bind9
+7.1. Добавьте в `/etc/bind/named.conf.options` секцию для Samba:  
+```conf
+tkey-gssapi-keytab "/var/lib/samba/private/dns.keytab";
 ```
-Введите пароль `AdminPass2025#`.  
-Проверьте билет:
+7.2. Перезапустите bind9:  
 ```bash
-klist
-```
-
-## 6. Запуск служб Samba
-
-### 6.1. Остановка ненужных служб
-```bash
-sudo systemctl stop nmbd smbd
+sudo systemctl restart bind9
 ```
 
-### 6.2. Запуск Samba AD DC
+#### 8. Запуск служб Samba AD DC
+8.1. Включите и запустите службы:  
 ```bash
-sudo systemctl start samba-ad-dc
 sudo systemctl enable samba-ad-dc
+sudo systemctl start samba-ad-dc
 ```
-
-### 6.3. Проверка статуса
+8.2. Проверьте статус:  
 ```bash
 sudo systemctl status samba-ad-dc
 ```
-Статус должен быть `active (running)`.
 
-## 7. Тестирование контроллера домена
-
-### 7.1. Проверка DNS
+#### 9. Проверка работоспособности
+9.1. Получите информацию о домене:  
 ```bash
-nslookup dc1.prac-sa.stud
+sudo samba-tool domain info testdomen.local
 ```
-Должен вернуться IP `10.10.13.1`.
-
-### 7.2. Проверка LDAP
-```bash
-ldapsearch -H ldap://dc1.prac-sa.stud -x -D "administrator@prac-sa.stud" -W -b "dc=prac-sa,dc=stud"
-```
-Введите пароль `AdminPass2025#`. Должен выводиться список объектов домена.
-
-### 7.3. Проверка Kerberos
-```bash
-kinit administrator@PRAC-SA.STUD
-klist
-```
-
-## 8. Управление пользователями и группами
-
-### 8.1. Создание пользователя
-```bash
-sudo samba-tool user create user1 --given-name="User" --surname="One" --mail-address="user1@prac-sa.stud"
-```
-Задайте пароль:
-```bash
-sudo samba-tool user setpassword user1
-```
-
-### 8.2. Добавление в группу
-```bash
-sudo samba-tool group addmembers "Domain Users" user1
-```
-
-### 8.3. Просмотр пользователей
+9.2. Проверьте список пользователей:  
 ```bash
 sudo samba-tool user list
 ```
-
-## 9. Настройка брандмауэра
-
-### 9.1. Открытие портов
+9.3. Проверьте DNS‑записи через Samba:  
 ```bash
-sudo ufw allow 53/tcp    # DNS
-sudo ufw allow 53/udp    # DNS
-sudo ufw allow 88/tcp    # Kerberos
-sudo ufw allow 88/udp    # Kerberos
-sudo ufw allow 135/tcp   # RPC
-sudo ufw allow 137/udp   # NetBIOS
-sudo ufw allow 138/udp   # NetBIOS
-sudo ufw allow 139/tcp   # NetBIOS
-sudo ufw allow 389/tcp   # LDAP
-sudo ufw allow 445/tcp   # SMB
-sudo ufw allow 464/tcp   # Kerberos password change
-sudo ufw allow 464/udp   # Kerberos password change
-sudo ufw allow 636/tcp   # LDAPS
-sudo ufw allow 3268/tcp  # Global Catalog
+sudo samba-tool dns query cus.testdomen.local testdomen.local @ ALL
 ```
 
-### 9.2. Включение UFW
+#### 10. Управление пользователями и группами
+10.1. Создайте пользователя:  
 ```bash
-sudo ufw enable
+sudo samba-tool user create alice \
+  --given-name="Alice Smith" \
+  --mail-address="alice@testdomen.local"
+```
+10.2. Установите пароль:  
+```bash
+sudo samba-tool user setpassword alice
+```
+10.3. Создайте группу:  
+```bash
+sudo samba-tool group add developers
+```
+10.4. Добавьте пользователя в группу:  
+```bash
+sudo samba-tool group addmembers developers alice
 ```
 
-## 10. Подключение клиента Windows к домену
+### Контрольные вопросы
+1. Почему для контроллера домена рекомендуется использовать статический IP‑адрес?  
+2. В чём отличие параметров `--realm` и `--domain` при настройке Samba AD?  
+3. Зачем требуется интеграция Samba с bind9 (опция `--dns-backend=BIND9_DLZ`)?  
+4. Как проверить, что Kerberos корректно настроен для работы с доменом?  
+5. Какие команды используются для управления пользователями и группами в Samba AD?
 
-1. На клиенте Windows откройте **Параметры** → **Система** → **О системе**.  
-2. Нажмите **Изменить параметры домена**.  
-3. Введите:  
-   - **Домен:** `prac-sa.stud`  
-   - **Логин:** `administrator@prac-sa.stud`  
-   - **Пароль:** `AdminPass2025#`  
-4. После перезагрузки войдите под учётной записью `user1`.
+### Отчёт по работе
+В отчёте необходимо представить:  
+1. Скриншоты этапов настройки (установка пакетов, вывод `samba-tool domain provision`, проверка DNS и Kerberos).  
+2. Конфигурационные файлы:  
+   - `/etc/samba/smb.conf` (ключевые секции);  
+   - `/etc/krb5.conf`;  
+   - фрагменты `/etc/bind/named.conf.options`.  
+3. Вывод команд:  
+   - `samba-tool domain info`;  
+   - `samba-tool user list`;  
+   - `nslookup cus.testdomen.local`.  
+4. Ответы на контрольные вопросы.
 
-## 11. Устранение неполадок
+### Возможные ошибки и их устранение
+- **Ошибка «DNS resolution failed»**: проверьте `/etc/resolv.conf` и настройки bind9.  
+- **Служба samba-ad-dc не запускается**: убедитесь, что порты 53 (DNS), 88 (Kerberos), 135–139 (SMB) не заблокированы.  
+- **Не удаётся аутентифицироваться**: проверьте пароль администратора и настройки Kerberos в `/etc/krb5.conf`.  
+- **Проблемы с DNS‑интеграцией**: убедитесь, что `tkey-gssapi-keytab` указан в `named.conf.options`.
 
-
-### 11.1. Типичные проблемы
-- **Не удаётся подключиться к DNS:** Проверьте `/etc/resolv.conf` и `nslookup`.  
-- **Ошибка аутентификации Kerberos:** Убедитесь, что время синхронизировано (`sudo timedatectl set-ntp true`).  
-- **Клиент не видит домен:** Проверьте порты брандмауэра и DNS‑настройки на клиенте.
-
-### 11.2. Просмотр логов
-```bash
-sudo tail -f /var/log/samba/log.*
-sudo journalctl -u samba-ad-dc -f
-```
-
-## 12. Результаты работы
-
-1. Установлен и настроен Samba DC в роли контроллера домена `prac-sa.stud`.  
-2. Настроены DNS, Kerberos и LDAP‑сервисы.  
-3. Создан пользователь `user1` и добавлен в группу «Domain Users».  
-4. Открыты необходимые порты брандмауэра.  
-5. Проверено подключение клиента Windows к домену.  
-6. Настроены логирование и диагностика.
-
-## 13. Выводы
-
-
+### Вывод
 В ходе лабораторной работы:  
-- Освоена установка Samba DC на Ubuntu Server.  
-- Настроен домен `prac-sa.stud` с DNS и Kerberos.  
-- Реализовано управление пользователями через Samba‑инструменты.  
-- Протестировано подключение клиента Windows.  
-- Изучены методы диагностики и устранения неполадок.  
-
-Работа выполнена успешно.
+- Настроен контроллер домена Samba AD DC на Ubuntu 24.04 с интеграцией в существующую инфраструктуру (DHCP, bind9).  
+- Выполнена базовая конфигурация DNS и Kerberos
